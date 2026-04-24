@@ -1,3 +1,4 @@
+import os
 import subprocess
 import asyncio
 import re
@@ -23,10 +24,13 @@ DOCKER_CMD = ["docker", "logs", "-f", DOCKER_CONTAINER]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    env = os.environ.copy()
+    env["DOCKER_HOST"] = "ssh://filer.lan"
     proc = await asyncio.create_subprocess_exec(
         *DOCKER_CMD,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     logger.info("Started docker logs subprocess")
 
