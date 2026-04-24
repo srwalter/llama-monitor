@@ -107,6 +107,28 @@
             text-shadow: 0 1px 2px rgba(0,0,0,0.5);
         }
 
+        .timing-section {
+            margin-top: 0.75rem;
+            display: flex;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .timing-item {
+            font-size: 0.85rem;
+            color: #aaa;
+        }
+
+        .timing-item span {
+            font-weight: 600;
+            color: #e0e0e0;
+        }
+
+        .timing-item .label {
+            color: #888;
+            margin-right: 0.25rem;
+        }
+
         .no-tasks {
             text-align: center;
             color: #555;
@@ -141,6 +163,7 @@
                     <div class="progress-bar-fill" style="width: 0%"></div>
                     <span class="progress-text">0%</span>
                 </div>
+                <div class="timing-section"></div>
             `;
             return card;
         }
@@ -166,6 +189,25 @@
             }
         }
 
+        function updateTiming(slot, task, promptTps, evalTps) {
+            const id = `task-${slot}-${task}`;
+            let card = document.getElementById(id);
+            if (!card) {
+                card = createTaskCard(slot, task);
+                tasksContainer.prepend(card);
+            }
+
+            const timingSection = card.querySelector('.timing-section');
+            let html = '';
+            if (promptTps > 0) {
+                html += `<div class="timing-item"><span class="label">Prompt:</span> <span>${promptTps.toFixed(1)} t/s</span></div>`;
+            }
+            if (evalTps > 0) {
+                html += `<div class="timing-item"><span class="label">Eval:</span> <span>${evalTps.toFixed(1)} t/s</span></div>`;
+            }
+            timingSection.innerHTML = html;
+        }
+
         const evtSource = new EventSource('/events');
 
         evtSource.onopen = () => {
@@ -176,7 +218,11 @@
         evtSource.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-                updateTask(data.slot, data.task, data.progress);
+                if (data.type === 'progress') {
+                    updateTask(data.slot, data.task, data.progress);
+                } else if (data.type === 'timing') {
+                    updateTiming(data.slot, data.task, data.prompt_tps, data.eval_tps);
+                }
             } catch (e) {
                 console.error('Failed to parse SSE data:', event.data);
             }
