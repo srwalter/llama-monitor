@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>llama.cpp Progress Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f1117;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 2rem;
+            color: #7c3aed;
+            font-size: 1.8rem;
+            font-weight: 600;
+        }
+
+        #status {
+            text-align: center;
+            margin-bottom: 1.5rem;
+            font-size: 0.9rem;
+            color: #888;
+        }
+
+        #status.connected {
+            color: #22c55e;
+        }
+
+        #status.disconnected {
+            color: #ef4444;
+        }
+
+        #tasks {
+            max-width: 900px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .task-card {
+            background: #1a1d27;
+            border-radius: 12px;
+            padding: 1.25rem 1.5rem;
+            border: 1px solid #2a2d3a;
+        }
+
+        .task-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+
+        .task-label {
+            font-weight: 600;
+            font-size: 1rem;
+            color: #c4b5fd;
+        }
+
+        .task-meta {
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        .progress-bar-container {
+            width: 100%;
+            height: 24px;
+            background: #0f1117;
+            border-radius: 6px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #7c3aed, #a78bfa);
+            border-radius: 6px;
+            transition: width 0.3s ease;
+            min-width: 0;
+        }
+
+        .progress-bar-fill.complete {
+            background: linear-gradient(90deg, #22c55e, #4ade80);
+        }
+
+        .progress-text {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #fff;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+        }
+
+        .no-tasks {
+            text-align: center;
+            color: #555;
+            padding: 3rem;
+            font-size: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <h1>llama.cpp Progress Monitor</h1>
+    <div id="status" class="disconnected">Connecting...</div>
+    <div id="tasks">
+        <div class="no-tasks">Waiting for progress data...</div>
+    </div>
+
+    <script>
+        const tasks = {};
+        const tasksContainer = document.getElementById('tasks');
+        const statusEl = document.getElementById('status');
+
+        function createTaskCard(slot, task) {
+            const id = `task-${slot}-${task}`;
+            const card = document.createElement('div');
+            card.className = 'task-card';
+            card.id = id;
+            card.innerHTML = `
+                <div class="task-header">
+                    <span class="task-label">Task ${task}</span>
+                    <span class="task-meta">Slot ${slot}</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar-fill" style="width: 0%"></div>
+                    <span class="progress-text">0%</span>
+                </div>
+            `;
+            return card;
+        }
+
+        function updateTask(slot, task, progress) {
+            const id = `task-${slot}-${task}`;
+            let card = document.getElementById(id);
+            if (!card) {
+                card = createTaskCard(slot, task);
+                tasksContainer.prepend(card);
+            }
+
+            const fill = card.querySelector('.progress-bar-fill');
+            const text = card.querySelector('.progress-text');
+            const pct = Math.round(progress * 100);
+
+            fill.style.width = `${pct}%`;
+            text.textContent = `${pct}%`;
+
+            if (progress >= 1.0) {
+                fill.classList.add('complete');
+                text.textContent = 'Done';
+            }
+        }
+
+        const evtSource = new EventSource('/events');
+
+        evtSource.onopen = () => {
+            statusEl.textContent = 'Connected';
+            statusEl.className = 'connected';
+        };
+
+        evtSource.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                updateTask(data.slot, data.task, data.progress);
+            } catch (e) {
+                console.error('Failed to parse SSE data:', event.data);
+            }
+        };
+
+        evtSource.onerror = () => {
+            statusEl.textContent = 'Disconnected - reconnecting...';
+            statusEl.className = 'disconnected';
+            evtSource.close();
+        };
+    </script>
+</body>
+</html>
