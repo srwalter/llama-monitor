@@ -1,15 +1,14 @@
 import os
-import subprocess
 import asyncio
 import re
 import logging
+from pathlib import Path
 from typing import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.templating import Jinja2Templates
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,6 +19,9 @@ PROMPT_PROGRESS_RE = re.compile(
 
 DOCKER_CONTAINER = "llama"
 DOCKER_CMD = ["docker", "logs", "-f", DOCKER_CONTAINER]
+
+BASE_DIR = Path(__file__).parent
+TEMPLATE_PATH = BASE_DIR / "templates" / "index.html"
 
 
 @asynccontextmanager
@@ -66,12 +68,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="llama.cpp Progress Monitor", lifespan=lifespan)
-templates = Jinja2Templates(directory="templates")
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+async def index():
+    html = TEMPLATE_PATH.read_text()
+    return HTMLResponse(content=html)
 
 
 @app.get("/events")
