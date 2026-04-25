@@ -25,6 +25,7 @@ TIMING_RE = re.compile(
 
 DOCKER_CONTAINER = "llama"
 DOCKER_CMD = ["docker", "logs", "-f", DOCKER_CONTAINER]
+_debug_line_count = 0
 
 BASE_DIR = Path(__file__).parent
 TEMPLATE_PATH = BASE_DIR / "templates" / "index.html"
@@ -127,10 +128,15 @@ async def sse_events():
 
         while True:
             lines = await asyncio.to_thread(log_reader.get_lines)
+            _debug_sent = 0
+            _progress_matched = 0
+            _timing_matched = 0
+            _debug_lines = []
             for line in lines:
                 # Check for progress line
                 m = PROMPT_PROGRESS_RE.search(line)
                 if m:
+                    _progress_matched += 1
                     current_slot = m.group(1)
                     current_task = m.group(3)
                     progress = float(m.group(4))
@@ -150,6 +156,7 @@ async def sse_events():
                 if current_slot and current_task and "time =" in line and "tokens" in line:
                     timing_lines.append(line)
                     if len(timing_lines) >= 3:
+                        _timing_matched += 1
                         prompt_tps = None
                         eval_tps = None
                         for tl in timing_lines:
@@ -172,7 +179,16 @@ async def sse_events():
                         current_slot = None
                         current_task = None
 
+                # Collect debug lines that contain keywords we should be matching
+                if _debug_sent < 20 and any(kw in line for kw in ["progress", "slot", "update_slots", "prompt processing", "task"]):
+                    _debug_lines.append(line[:300])
+                    _debug_sent += 1
+
             await asyncio.sleep(0.2)
+            if _progress_matched > 0 or _timing_matched > 0:
+                logger.info(f"SSE poll: progress={_progress_matched}, timing={_timing_matched}")
+            if _debug_lines:
+                logger.info(f"DEBUG lines that should match regex:\n" + "\n".join(_debug_lines))
             yield ':\n\n'
 
     return StreamingResponse(
