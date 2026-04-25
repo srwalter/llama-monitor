@@ -191,7 +191,7 @@ async def sse_events():
                 # Check for timing block start
                 if "print_timing" in line:
                     timing_lines = []
-                    tm = re.search(r"slot\s+(\d+).*?task\s+(\d+)", line)
+                    tm = re.search(r"slot\s+print_timing:\s+id\s+(\d+).*?task\s+(\d+)", line)
                     if tm:
                         current_slot = tm.group(1)
                         current_task = tm.group(2)
@@ -200,7 +200,7 @@ async def sse_events():
                 # Collect timing lines
                 if current_slot and current_task and "time =" in line and "tokens" in line:
                     timing_lines.append(line)
-                    if len(timing_lines) >= 3:
+                    if len(timing_lines) >= 2:
                         prompt_tps = None
                         eval_tps = None
                         for tl in timing_lines:
