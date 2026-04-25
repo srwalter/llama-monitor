@@ -1,7 +1,9 @@
 import os
-import asyncio
 import re
+import json
 import logging
+import threading
+import select
 from pathlib import Path
 from typing import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -28,88 +30,74 @@ BASE_DIR = Path(__file__).parent
 TEMPLATE_PATH = BASE_DIR / "templates" / "index.html"
 
 
+class LogReader:
+    def __init__(self):
+        self._lines = []
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def start(self):
+        env = os.environ.copy()
+        env["DOCKER_HOST"] = "ssh://filer.lan"
+        self._thread = threading.Thread(
+            target=self._stream_logs,
+            args=(env,),
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info("Started docker logs thread")
+
+    def _stream_logs(self, env):
+        import subprocess
+
+        proc = subprocess.Popen(
+            DOCKER_CMD,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+        )
+        logger.info("Started docker logs subprocess")
+
+        try:
+            while not self._stop_event.is_set():
+                ready, _, _ = select.select([proc.stderr], [], [], 0.5)
+                if ready:
+                    line = proc.stderr.readline()
+                    if line:
+                        stripped = line.strip()
+                        if stripped:
+                            with self._lock:
+                                self._lines.append(stripped)
+        finally:
+            proc.terminate()
+            proc.wait()
+            logger.info("Stopped docker logs subprocess")
+
+    def get_lines(self):
+        with self._lock:
+            lines = list(self._lines)
+            self._lines.clear()
+            return lines
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+
+log_reader = LogReader()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    env = os.environ.copy()
-    env["DOCKER_HOST"] = "ssh://filer.lan"
-    proc = await asyncio.create_subprocess_exec(
-        *DOCKER_CMD,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    logger.info("Started docker logs subprocess")
-
-    async def stream_logs():
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="replace").strip()
-            if text:
-                yield text
-
-    async def parse_events():
-        current_slot = None
-        current_task = None
-        timing_lines = []
-
-        async for line in stream_logs():
-            # Check for progress line
-            m = PROMPT_PROGRESS_RE.search(line)
-            if m:
-                current_slot = m.group(1)
-                current_task = m.group(3)
-                progress = float(m.group(4))
-                yield f'{{"type": "progress", "slot": "{current_slot}", "task": "{current_task}", "progress": {progress:.6f}}}'
-                continue
-
-            # Check for timing block start
-            if "print_timing" in line:
-                timing_lines = []
-                tm = re.search(r"slot\s+(\d+).*?task\s+(\d+)", line)
-                if tm:
-                    current_slot = tm.group(1)
-                    current_task = tm.group(2)
-                continue
-
-            # Collect timing lines
-            if current_slot and current_task and "time =" in line and "tokens" in line:
-                timing_lines.append(line)
-                if len(timing_lines) >= 3:
-                    prompt_tps = None
-                    eval_tps = None
-                    for tl in timing_lines:
-                        tm2 = TIMING_RE.search(tl)
-                        if tm2:
-                            kind = tm2.group(1)
-                            tps = float(tm2.group(2))
-                            if kind == "prompt eval":
-                                prompt_tps = tps
-                            elif kind == "eval":
-                                eval_tps = tps
-                    if prompt_tps is not None or eval_tps is not None:
-                        yield f'{{"type": "timing", "slot": "{current_slot}", "task": "{current_task}", "prompt_tps": {prompt_tps or 0:.2f}, "eval_tps": {eval_tps or 0:.2f}}}'
-                    timing_lines = []
-                continue
-
-            # Reset on any other line that looks like a new prompt processing start
-            if "prompt processing" not in line and "print_timing" not in line and "update_slots" not in line:
-                if current_slot and not ("prompt processing" in line or "time =" in line):
-                    current_slot = None
-                    current_task = None
-
-    app.state.events = parse_events()
+    log_reader.start()
     logger.info("Event generator ready")
 
     yield
 
-    try:
-        proc.terminate()
-        await asyncio.wait_for(proc.wait(), timeout=5)
-    except (ProcessLookupError, asyncio.TimeoutError):
-        pass
-    logger.info("Stopped docker logs subprocess")
+    log_reader.stop()
 
 
 app = FastAPI(title="llama.cpp Progress Monitor", lifespan=lifespan)
@@ -124,16 +112,63 @@ async def index():
 @app.get("/events")
 async def sse_events():
     async def event_generator() -> AsyncGenerator[str, None]:
+        import asyncio
+
+        current_slot = None
+        current_task = None
+        timing_lines = []
+
         while True:
-            try:
-                event = await app.state.events.__anext__()
-                yield f"data: {event}\n\n"
-                await asyncio.sleep(0.05)
-            except StopAsyncIteration:
-                break
-            except Exception as e:
-                logger.error(f"SSE error: {e}")
-                await asyncio.sleep(1)
+            lines = await asyncio.to_thread(log_reader.get_lines)
+            for line in lines:
+                # Send raw log line
+                yield f'{{"type": "log", "message": {json.dumps(line)}}}'
+
+                # Check for progress line
+                m = PROMPT_PROGRESS_RE.search(line)
+                if m:
+                    current_slot = m.group(1)
+                    current_task = m.group(3)
+                    progress = float(m.group(4))
+                    yield f'{{"type": "progress", "slot": "{current_slot}", "task": "{current_task}", "progress": {progress:.6f}}}'
+                    continue
+
+                # Check for timing block start
+                if "print_timing" in line:
+                    timing_lines = []
+                    tm = re.search(r"slot\s+(\d+).*?task\s+(\d+)", line)
+                    if tm:
+                        current_slot = tm.group(1)
+                        current_task = tm.group(2)
+                    continue
+
+                # Collect timing lines
+                if current_slot and current_task and "time =" in line and "tokens" in line:
+                    timing_lines.append(line)
+                    if len(timing_lines) >= 3:
+                        prompt_tps = None
+                        eval_tps = None
+                        for tl in timing_lines:
+                            tm2 = TIMING_RE.search(tl)
+                            if tm2:
+                                kind = tm2.group(1)
+                                tps = float(tm2.group(2))
+                                if kind == "prompt eval":
+                                    prompt_tps = tps
+                                elif kind == "eval":
+                                    eval_tps = tps
+                        if prompt_tps is not None or eval_tps is not None:
+                            yield f'{{"type": "timing", "slot": "{current_slot}", "task": "{current_task}", "prompt_tps": {prompt_tps or 0:.2f}, "eval_tps": {eval_tps or 0:.2f}}}'
+                        timing_lines = []
+                    continue
+
+                # Reset on any other line that looks like a new prompt processing start
+                if "prompt processing" not in line and "print_timing" not in line and "update_slots" not in line:
+                    if current_slot and not ("prompt processing" in line or "time =" in line):
+                        current_slot = None
+                        current_task = None
+
+            await asyncio.sleep(0.2)
 
     return StreamingResponse(
         event_generator(),

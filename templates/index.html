@@ -135,6 +135,106 @@
             padding: 3rem;
             font-size: 1rem;
         }
+
+        #controls {
+            max-width: 900px;
+            margin: 0 auto 1rem;
+            display: flex;
+            justify-content: center;
+            gap: 1rem;
+        }
+
+        .toggle-btn {
+            background: #1a1d27;
+            border: 1px solid #2a2d3a;
+            color: #c4b5fd;
+            padding: 0.5rem 1.25rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: background 0.2s;
+        }
+
+        .toggle-btn:hover {
+            background: #2a2d3a;
+        }
+
+        .toggle-btn.active {
+            background: #7c3aed;
+            color: #fff;
+            border-color: #7c3aed;
+        }
+
+        #log-viewer {
+            max-width: 900px;
+            margin: 0 auto 1rem;
+            background: #0a0c10;
+            border-radius: 12px;
+            border: 1px solid #2a2d3a;
+            display: none;
+            max-height: 400px;
+            overflow: hidden;
+        }
+
+        #log-viewer.visible {
+            display: block;
+        }
+
+        #log-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid #2a2d3a;
+        }
+
+        #log-header span {
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        #log-content {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            font-size: 0.75rem;
+            line-height: 1.5;
+            padding: 0.75rem;
+            max-height: 350px;
+            overflow-y: auto;
+            color: #aaa;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        #log-content .log-line {
+            border-bottom: 1px solid #1a1d27;
+            padding: 0.1rem 0;
+        }
+
+        #log-content .log-line:nth-child(odd) {
+            background: rgba(255,255,255,0.02);
+        }
+
+        #log-content .log-line.progress {
+            color: #a78bfa;
+        }
+
+        #log-content .log-line.timing {
+            color: #4ade80;
+        }
+
+        #log-content .log-line.other {
+            color: #888;
+        }
+
+        #log-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 1rem;
+            border-top: 1px solid #2a2d3a;
+            font-size: 0.75rem;
+            color: #555;
+        }
     </style>
 </head>
 <body>
@@ -144,8 +244,27 @@
         <div class="no-tasks">Waiting for progress data...</div>
     </div>
 
+    <div id="controls">
+        <button class="toggle-btn" id="toggle-logs">Show Logs</button>
+        <button class="toggle-btn" id="clear-tasks">Clear Tasks</button>
+    </div>
+
+    <div id="log-viewer">
+        <div id="log-header">
+            <span>Live Logs</span>
+            <span id="log-count">0 lines</span>
+        </div>
+        <div id="log-content"></div>
+        <div id="log-footer">
+            <span id="log-status">Buffer: 0 lines</span>
+            <button class="toggle-btn" id="toggle-autoscroll" style="padding:0.25rem 0.75rem;font-size:0.75rem;">Autoscroll: ON</button>
+        </div>
+    </div>
+
     <script>
         const tasks = {};
+        const taskData = {};
+        const COMPLETED_COLLAPSE_MS = 30000;
         const tasksContainer = document.getElementById('tasks');
         const statusEl = document.getElementById('status');
 
@@ -169,11 +288,16 @@
         }
 
         function updateTask(slot, task, progress) {
+            const key = slot + '-' + task;
             const id = `task-${slot}-${task}`;
             let card = document.getElementById(id);
             if (!card) {
                 card = createTaskCard(slot, task);
                 tasksContainer.prepend(card);
+            }
+
+            if (!taskData[key]) {
+                taskData[key] = { completed: false, completedAt: 0, progress: 0 };
             }
 
             const fill = card.querySelector('.progress-bar-fill');
@@ -183,11 +307,36 @@
             fill.style.width = `${pct}%`;
             text.textContent = `${pct}%`;
 
-            if (progress >= 1.0) {
+            if (progress >= 1.0 && !taskData[key].completed) {
                 fill.classList.add('complete');
                 text.textContent = 'Done';
+                taskData[key] = { completed: true, completedAt: Date.now(), progress: 1.0 };
+            } else if (progress < 1.0) {
+                taskData[key] = { completed: false, completedAt: 0, progress };
             }
         }
+
+        function collapseCompletedTasks() {
+            const now = Date.now();
+            for (const [key, data] of Object.entries(taskData)) {
+                if (data.completed && data.completedAt > 0 && (now - data.completedAt) > COMPLETED_COLLAPSE_MS) {
+                    const [slot, task] = key.split('-');
+                    const id = `task-${slot}-${task}`;
+                    const card = document.getElementById(id);
+                    if (card) {
+                        card.style.opacity = '0.3';
+                        card.style.pointerEvents = 'none';
+                        const text = card.querySelector('.progress-text');
+                        if (text) {
+                            const elapsed = Math.round((now - data.completedAt) / 1000);
+                            text.textContent = `Done (${elapsed}s ago)`;
+                        }
+                    }
+                }
+            }
+        }
+
+        setInterval(collapseCompletedTasks, 5000);
 
         function updateTiming(slot, task, promptTps, evalTps) {
             const id = `task-${slot}-${task}`;
@@ -208,31 +357,144 @@
             timingSection.innerHTML = html;
         }
 
-        const evtSource = new EventSource('/events');
+        const logViewer = document.getElementById('log-viewer');
+        const logContent = document.getElementById('log-content');
+        const logCount = document.getElementById('log-count');
+        const logStatus = document.getElementById('log-status');
+        const toggleLogsBtn = document.getElementById('toggle-logs');
+        const clearTasksBtn = document.getElementById('clear-tasks');
+        const toggleAutoscrollBtn = document.getElementById('toggle-autoscroll');
+        let logBuffer = [];
+        let maxLogLines = 500;
+        let autoscroll = true;
+        let totalLogLines = 0;
 
-        evtSource.onopen = () => {
-            statusEl.textContent = 'Connected';
-            statusEl.className = 'connected';
-        };
-
-        evtSource.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'progress') {
-                    updateTask(data.slot, data.task, data.progress);
-                } else if (data.type === 'timing') {
-                    updateTiming(data.slot, data.task, data.prompt_tps, data.eval_tps);
-                }
-            } catch (e) {
-                console.error('Failed to parse SSE data:', event.data);
+        toggleLogsBtn.addEventListener('click', () => {
+            logViewer.classList.toggle('visible');
+            toggleLogsBtn.classList.toggle('active');
+            toggleLogsBtn.textContent = logViewer.classList.contains('visible') ? 'Hide Logs' : 'Show Logs';
+            if (logViewer.classList.contains('visible')) {
+                logContent.scrollTop = logContent.scrollHeight;
             }
-        };
+        });
 
-        evtSource.onerror = () => {
-            statusEl.textContent = 'Disconnected - reconnecting...';
-            statusEl.className = 'disconnected';
-            evtSource.close();
-        };
+        toggleAutoscrollBtn.addEventListener('click', () => {
+            autoscroll = !autoscroll;
+            toggleAutoscrollBtn.textContent = `Autoscroll: ${autoscroll ? 'ON' : 'OFF'}`;
+            toggleAutoscrollBtn.classList.toggle('active', autoscroll);
+        });
+
+        clearTasksBtn.addEventListener('click', () => {
+            if (confirm('Clear all task cards?')) {
+                tasksContainer.innerHTML = '<div class="no-tasks">Waiting for progress data...</div>';
+                Object.keys(tasks).forEach(k => delete tasks[k]);
+            }
+        });
+
+        function addLogEntry(message) {
+            totalLogLines++;
+            logBuffer.push({ message, time: Date.now(), total: totalLogLines });
+            if (logBuffer.length > maxLogLines) {
+                logBuffer = logBuffer.slice(-maxLogLines);
+            }
+            renderLogLines();
+        }
+
+        function renderLogLines() {
+            logCount.textContent = `${totalLogLines.toLocaleString()} lines`;
+            logStatus.textContent = `Buffer: ${logBuffer.length.toLocaleString()} lines`;
+
+            const fragment = document.createDocumentFragment();
+            for (const entry of logBuffer) {
+                const div = document.createElement('div');
+                div.className = 'log-line';
+                const msg = entry.message;
+                if (msg.includes('progress')) {
+                    div.classList.add('progress');
+                } else if (msg.includes('time =') || msg.includes('print_timing')) {
+                    div.classList.add('timing');
+                } else {
+                    div.classList.add('other');
+                }
+                div.textContent = `${entry.total}. ${msg}`;
+                fragment.appendChild(div);
+            }
+
+            const wasAtBottom = logContent.scrollHeight - logContent.scrollTop <= logContent.clientHeight + 50;
+            logContent.innerHTML = '';
+            logContent.appendChild(fragment);
+            if (autoscroll && wasAtBottom) {
+                logContent.scrollTop = logContent.scrollHeight;
+            }
+        }
+
+        let evtSource = null;
+        let reconnectAttempts = 0;
+        let maxReconnectAttempts = 30;
+        let lastActivityTime = Date.now();
+        let inactivityTimer = null;
+        const RECONNECT_DELAY = 2000;
+
+        function connect() {
+            if (evtSource) {
+                evtSource.close();
+            }
+            evtSource = new EventSource('/events');
+            reconnectAttempts++;
+
+            evtSource.onopen = () => {
+                statusEl.textContent = 'Connected';
+                statusEl.className = 'connected';
+                reconnectAttempts = 0;
+                lastActivityTime = Date.now();
+                resetInactivityTimer();
+            };
+
+            evtSource.onmessage = (event) => {
+                lastActivityTime = Date.now();
+                resetInactivityTimer();
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'progress') {
+                        updateTask(data.slot, data.task, data.progress);
+                    } else if (data.type === 'timing') {
+                        updateTiming(data.slot, data.task, data.prompt_tps, data.eval_tps);
+                    } else if (data.type === 'log') {
+                        addLogEntry(data.message);
+                    }
+                } catch (e) {
+                    console.error('Failed to parse SSE data:', event.data);
+                }
+            };
+
+            evtSource.onerror = () => {
+                if (evtSource.readyState === EventSource.CLOSED) {
+                    statusEl.textContent = 'Connection closed';
+                    statusEl.className = 'disconnected';
+                    return;
+                }
+                reconnectAttempts++;
+                const delay = Math.min(RECONNECT_DELAY * Math.min(reconnectAttempts, 10), 30000);
+                statusEl.textContent = `Disconnected - reconnecting in ${delay/1000}s (attempt ${reconnectAttempts})...`;
+                statusEl.className = 'disconnected';
+                evtSource.close();
+                setTimeout(connect, delay);
+            };
+        }
+
+        function resetInactivityTimer() {
+            if (inactivityTimer) clearTimeout(inactivityTimer);
+            inactivityTimer = setTimeout(() => {
+                if (evtSource && evtSource.readyState !== EventSource.OPEN) {
+                    statusEl.textContent = 'No data received - reconnecting...';
+                    statusEl.className = 'disconnected';
+                    evtSource.close();
+                    setTimeout(connect, 3000);
+                }
+            }, 60000);
+        }
+
+        connect();
     </script>
 </body>
 </html>
