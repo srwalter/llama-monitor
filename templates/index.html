@@ -269,6 +269,82 @@
             height: 120px;
             display: block;
         }
+
+        #clippy {
+            position: fixed;
+            bottom: -120px;
+            right: 30px;
+            z-index: 1000;
+            transition: bottom 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+            cursor: pointer;
+            filter: drop-shadow(0 4px 12px rgba(0,0,0,0.4));
+        }
+
+        #clippy.visible {
+            bottom: 30px;
+        }
+
+        #clippy .speech-bubble {
+            position: absolute;
+            bottom: 100%;
+            right: 0;
+            left: 50px;
+            background: #fff;
+            color: #333;
+            border-radius: 12px;
+            padding: 0.6rem 1rem;
+            font-size: 0.8rem;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin-bottom: 8px;
+            white-space: nowrap;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            opacity: 0;
+            transform: scale(0.8);
+            transition: opacity 0.3s ease, transform 0.3s ease;
+            pointer-events: none;
+        }
+
+        #clippy.visible .speech-bubble {
+            opacity: 1;
+            transform: scale(1);
+        }
+
+        #clippy .speech-bubble::after {
+            content: '';
+            position: absolute;
+            bottom: -8px;
+            right: 20px;
+            width: 0;
+            height: 0;
+            border-left: 8px solid transparent;
+            border-right: 8px solid transparent;
+            border-top: 8px solid #fff;
+        }
+
+        #clippy svg {
+            width: 80px;
+            height: 80px;
+        }
+
+        #clippy .eye {
+            animation: blink 3s infinite;
+        }
+
+        @keyframes blink {
+            0%, 95%, 100% { transform: scaleY(1); }
+            97% { transform: scaleY(0.1); }
+        }
+
+        #clippy.waving svg {
+            animation: wave 0.6s ease-in-out;
+            transform-origin: 40px 80px;
+        }
+
+        @keyframes wave {
+            0%, 100% { transform: rotate(0deg); }
+            25% { transform: rotate(-15deg); }
+            75% { transform: rotate(15deg); }
+        }
     </style>
 </head>
 <body>
@@ -300,6 +376,27 @@
             <span id="log-status">Buffer: 0 lines</span>
             <button class="toggle-btn" id="toggle-autoscroll" style="padding:0.25rem 0.75rem;font-size:0.75rem;">Autoscroll: ON</button>
         </div>
+    </div>
+
+    <div id="clippy" title="Need help?">
+        <div class="speech-bubble" id="clippy-bubble"></div>
+        <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+            <!-- Body - paperclip shape -->
+            <path d="M40 8 C40 8 28 8 28 20 C28 30 36 32 36 42 C36 50 30 54 30 62 C30 70 36 74 42 74 C48 74 50 68 50 62 L50 30 C50 20 44 14 36 14 C28 14 22 20 22 28"
+                  fill="none" stroke="#7c3aed" stroke-width="5" stroke-linecap="round"/>
+            <!-- Left eye -->
+            <ellipse class="eye" cx="30" cy="24" rx="4" ry="4.5" fill="#1a1d27"/>
+            <!-- Right eye -->
+            <ellipse class="eye" cx="42" cy="24" rx="4" ry="4.5" fill="#1a1d27"/>
+            <!-- Eye shine -->
+            <ellipse cx="31.5" cy="22.5" rx="1.5" ry="1.5" fill="#fff"/>
+            <ellipse cx="43.5" cy="22.5" rx="1.5" ry="1.5" fill="#fff"/>
+            <!-- Smile -->
+            <path d="M33 32 Q36 36 40 32" fill="none" stroke="#7c3aed" stroke-width="2" stroke-linecap="round"/>
+            <!-- Blush -->
+            <ellipse cx="26" cy="30" rx="3" ry="2" fill="#a78bfa" opacity="0.4"/>
+            <ellipse cx="46" cy="30" rx="3" ry="2" fill="#a78bfa" opacity="0.4"/>
+        </svg>
     </div>
 
     <script>
@@ -584,6 +681,57 @@
             }
             resizeGpuCanvas();
             drawGpuGraph();
+            updateClippy(data.utilization);
+        }
+
+        const clippy = document.getElementById('clippy');
+        const clippyBubble = document.getElementById('clippy-bubble');
+        const clippyMessages = [
+            "It looks like you're generating tokens!",
+            "Need a hand with that inference?",
+            "I see you're running some LLMs!",
+            "GPU is busy! Want me to help?",
+            "Looks like someone's doing some AI work!",
+            "I'm here if you need me!",
+            "Tokens per second looking good!",
+            "Keep 'em coming!",
+            "Your GPU is having fun!",
+            "Prompt processing in progress!",
+        ];
+
+        let clippyVisible = false;
+        let clippyTimeout = null;
+
+        function updateClippy(util) {
+            if (util > 0 && !clippyVisible) {
+                clippyVisible = true;
+                clippy.classList.add('visible');
+                clippy.classList.add('waving');
+                clippyBubble.textContent = clippyMessages[Math.floor(Math.random() * clippyMessages.length)];
+                clearTimeout(clippyTimeout);
+                clippyTimeout = setTimeout(() => {
+                    clippy.classList.remove('waving');
+                }, 600);
+            } else if (util === 0 && clippyVisible) {
+                clippyVisible = false;
+                clippy.classList.remove('visible');
+                clippyBubble.textContent = '';
+            }
+
+            if (util > 0 && clippyVisible) {
+                if (util > 80) {
+                    clippyBubble.textContent = "Wow, that's intense! 🔥";
+                } else if (util > 50) {
+                    clippyBubble.textContent = "Good workload!";
+                }
+
+                clearTimeout(clippyTimeout);
+                clippyTimeout = setTimeout(() => {
+                    if (clippyVisible) {
+                        clippyBubble.textContent = clippyMessages[Math.floor(Math.random() * clippyMessages.length)];
+                    }
+                }, 5000);
+            }
         }
 
         function startGpuConnection() {
