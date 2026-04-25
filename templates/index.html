@@ -235,11 +235,52 @@
             font-size: 0.75rem;
             color: #555;
         }
+
+        #gpu-monitor {
+            max-width: 900px;
+            margin: 0 auto 1rem;
+            background: #1a1d27;
+            border-radius: 12px;
+            border: 1px solid #2a2d3a;
+            padding: 1.25rem 1.5rem;
+        }
+
+        #gpu-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+
+        #gpu-title {
+            font-weight: 600;
+            font-size: 1rem;
+            color: #c4b5fd;
+        }
+
+        #gpu-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #e0e0e0;
+        }
+
+        #gpu-canvas {
+            width: 100%;
+            height: 120px;
+            display: block;
+        }
     </style>
 </head>
 <body>
     <h1>llama.cpp Progress Monitor</h1>
-    <div id="status" class="disconnected">Connecting...</div>
+      <div id="status" class="disconnected">Connecting...</div>
+    <div id="gpu-monitor">
+        <div id="gpu-header">
+            <span id="gpu-title">GPU Utilization</span>
+            <span id="gpu-value">0%</span>
+        </div>
+        <canvas id="gpu-canvas"></canvas>
+    </div>
     <div id="tasks">
         <div class="no-tasks">Waiting for progress data...</div>
     </div>
@@ -468,6 +509,104 @@
                 logEvtSource = null;
             }
         }
+
+        const gpuCanvas = document.getElementById('gpu-canvas');
+        const gpuCtx = gpuCanvas.getContext('2d');
+        const gpuValueEl = document.getElementById('gpu-value');
+        const gpuHistory = [];
+        const MAX_GPU_POINTS = 120;
+        let gpuEvtSource = null;
+
+        function resizeGpuCanvas() {
+            const rect = gpuCanvas.parentElement.getBoundingClientRect();
+            gpuCanvas.width = rect.width - 48;
+            gpuCanvas.height = 120;
+        }
+
+        function drawGpuGraph() {
+            const w = gpuCanvas.width;
+            const h = gpuCanvas.height;
+            gpuCtx.clearRect(0, 0, w, h);
+
+            if (gpuHistory.length < 2) return;
+
+            const padding = { top: 10, bottom: 10, left: 0, right: 0 };
+            const graphW = w - padding.left - padding.right;
+            const graphH = h - padding.top - padding.bottom;
+
+            // Grid lines
+            gpuCtx.strokeStyle = '#2a2d3a';
+            gpuCtx.lineWidth = 1;
+            for (let i = 0; i <= 4; i++) {
+                const y = padding.top + (graphH / 4) * i;
+                gpuCtx.beginPath();
+                gpuCtx.moveTo(padding.left, y);
+                gpuCtx.lineTo(w - padding.right, y);
+                gpuCtx.stroke();
+            }
+
+            // Line
+            const gradient = gpuCtx.createLinearGradient(0, padding.top, 0, h - padding.bottom);
+            gradient.addColorStop(0, 'rgba(124, 58, 237, 0.8)');
+            gradient.addColorStop(1, 'rgba(124, 58, 237, 0.1)');
+
+            gpuCtx.beginPath();
+            gpuCtx.strokeStyle = '#7c3aed';
+            gpuCtx.lineWidth = 2;
+
+            const step = graphW / (MAX_GPU_POINTS - 1);
+            for (let i = 0; i < gpuHistory.length; i++) {
+                const x = padding.left + i * step;
+                const y = padding.top + graphH - (gpuHistory[i] / 100) * graphH;
+                if (i === 0) {
+                    gpuCtx.moveTo(x, y);
+                } else {
+                    gpuCtx.lineTo(x, y);
+                }
+            }
+            gpuCtx.stroke();
+
+            // Fill under line
+            const lastX = padding.left + (gpuHistory.length - 1) * step;
+            const lastY = padding.top + graphH - (gpuHistory[gpuHistory.length - 1] / 100) * graphH;
+            gpuCtx.lineTo(lastX, h - padding.bottom);
+            gpuCtx.lineTo(padding.left, h - padding.bottom);
+            gpuCtx.closePath();
+            gpuCtx.fillStyle = gradient;
+            gpuCtx.fill();
+        }
+
+        function updateGpuData(data) {
+            gpuValueEl.textContent = data.utilization + '%';
+            gpuHistory.push(data.utilization);
+            if (gpuHistory.length > MAX_GPU_POINTS) {
+                gpuHistory.shift();
+            }
+            resizeGpuCanvas();
+            drawGpuGraph();
+        }
+
+        function startGpuConnection() {
+            gpuHistory.length = 0;
+            gpuEvtSource = new EventSource('/gpu');
+            gpuEvtSource.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'gpu') {
+                        updateGpuData(data);
+                    }
+                } catch (e) {
+                    console.error('Failed to parse GPU SSE data:', event.data);
+                }
+            };
+            gpuEvtSource.onerror = () => {
+                gpuEvtSource.close();
+                gpuEvtSource = null;
+            };
+        }
+
+        startGpuConnection();
+        window.addEventListener('resize', resizeGpuCanvas);
 
         let evtSource = null;
         let reconnectAttempts = 0;

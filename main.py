@@ -95,16 +95,67 @@ class LogReader:
 
 
 log_reader = LogReader()
+GPU_BUSY_PATH = "/sys/class/drm/card1/device/gpu_busy_percent"
+
+
+class GpuMonitor:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._utilization = 0
+        self._history = []
+        self._max_history = 60
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def start(self):
+        self._thread = threading.Thread(
+            target=self._poll,
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info("Started GPU monitor")
+
+    def _poll(self):
+        while not self._stop_event.is_set():
+            try:
+                with open(GPU_BUSY_PATH) as f:
+                    value = int(f.read().strip())
+            except Exception:
+                value = 0
+            with self._lock:
+                self._utilization = value
+                self._history.append(value)
+                if len(self._history) > self._max_history:
+                    self._history = self._history[-self._max_history:]
+            self._stop_event.wait(1)
+
+    def get_utilization(self):
+        with self._lock:
+            return self._utilization
+
+    def get_history(self):
+        with self._lock:
+            return list(self._history)
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+
+gpu_monitor = GpuMonitor()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_reader.start()
+    gpu_monitor.start()
     logger.info("Event generator ready")
 
     yield
 
     log_reader.stop()
+    gpu_monitor.stop()
 
 
 app = FastAPI(title="llama.cpp Progress Monitor", lifespan=lifespan)
@@ -200,6 +251,32 @@ async def sse_logs():
 
     return StreamingResponse(
         log_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/gpu")
+async def sse_gpu():
+    async def gpu_generator() -> AsyncGenerator[str, None]:
+        import asyncio
+
+        current_history = []
+        while True:
+            util = await asyncio.to_thread(gpu_monitor.get_utilization)
+            history = await asyncio.to_thread(gpu_monitor.get_history)
+            if history != current_history:
+                current_history = history
+                yield f'data: {json.dumps({"type": "gpu", "utilization": util, "history": history})}\n\n'
+            await asyncio.sleep(0.5)
+            yield ':\n\n'
+
+    return StreamingResponse(
+        gpu_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
