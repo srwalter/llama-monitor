@@ -59,3 +59,8 @@ Create a web application to monitor llama.cpp's progress by watching Docker cont
 - `/mnt/bigdisk/home/srwalter/src/llama-monitor/requirements.txt` - Dependencies (fastapi, uvicorn)
 - `/mnt/bigdisk/home/srwalter/src/llama-monitor/` - Project root directory
 - `/sys/class/drm/card1/device/gpu_busy_percent` - GPU utilization file (read by GpuMonitor)
+
+## Git Workflow Rules (Critical - Always Follow)
+* Make a git commit after each turn
+
+CRITICAL: commit after successful changes in each major turn.
