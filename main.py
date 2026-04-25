@@ -36,6 +36,7 @@ class LogReader:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread = None
+        self._line_count = 0
 
     def start(self):
         env = os.environ.copy()
@@ -53,7 +54,6 @@ class LogReader:
 
         proc = subprocess.Popen(
             DOCKER_CMD,
-            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
             text=True,
@@ -70,6 +70,9 @@ class LogReader:
                         if stripped:
                             with self._lock:
                                 self._lines.append(stripped)
+                                self._line_count += 1
+                            if self._line_count % 100 == 0:
+                                logger.info(f"Collected {self._line_count} log lines")
         finally:
             proc.terminate()
             proc.wait()
@@ -80,6 +83,10 @@ class LogReader:
             lines = list(self._lines)
             self._lines.clear()
             return lines
+
+    def get_line_count(self):
+        with self._lock:
+            return self._line_count
 
     def stop(self):
         self._stop_event.set()
@@ -120,9 +127,10 @@ async def sse_events():
 
         while True:
             lines = await asyncio.to_thread(log_reader.get_lines)
+            logger.debug(f"SSE poll: {len(lines)} lines")
             for line in lines:
                 # Send raw log line
-                yield f'{{"type": "log", "message": {json.dumps(line)}}}'
+                yield f'data: {{"type": "log", "message": {json.dumps(line)}}}\n\n'
 
                 # Check for progress line
                 m = PROMPT_PROGRESS_RE.search(line)
@@ -130,7 +138,7 @@ async def sse_events():
                     current_slot = m.group(1)
                     current_task = m.group(3)
                     progress = float(m.group(4))
-                    yield f'{{"type": "progress", "slot": "{current_slot}", "task": "{current_task}", "progress": {progress:.6f}}}'
+                    yield f'data: {{"type": "progress", "slot": "{current_slot}", "task": "{current_task}", "progress": {progress:.6f}}}\n\n'
                     continue
 
                 # Check for timing block start
@@ -158,7 +166,7 @@ async def sse_events():
                                 elif kind == "eval":
                                     eval_tps = tps
                         if prompt_tps is not None or eval_tps is not None:
-                            yield f'{{"type": "timing", "slot": "{current_slot}", "task": "{current_task}", "prompt_tps": {prompt_tps or 0:.2f}, "eval_tps": {eval_tps or 0:.2f}}}'
+                            yield f'data: {{"type": "timing", "slot": "{current_slot}", "task": "{current_task}", "prompt_tps": {prompt_tps or 0:.2f}, "eval_tps": {eval_tps or 0:.2f}}}\n\n'
                         timing_lines = []
                     continue
 
@@ -169,6 +177,7 @@ async def sse_events():
                         current_task = None
 
             await asyncio.sleep(0.2)
+            yield ':\n\n'
 
     return StreamingResponse(
         event_generator(),
