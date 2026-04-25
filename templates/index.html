@@ -368,12 +368,20 @@
         let maxLogLines = 500;
         let autoscroll = true;
         let totalLogLines = 0;
+        let logEvtSource = null;
+        let renderRAF = null;
+        let logDirty = false;
 
         toggleLogsBtn.addEventListener('click', () => {
-            logViewer.classList.toggle('visible');
-            toggleLogsBtn.classList.toggle('active');
-            toggleLogsBtn.textContent = logViewer.classList.contains('visible') ? 'Hide Logs' : 'Show Logs';
-            if (logViewer.classList.contains('visible')) {
+            const isVisible = logViewer.classList.toggle('visible');
+            toggleLogsBtn.classList.toggle('active', isVisible);
+            toggleLogsBtn.textContent = isVisible ? 'Hide Logs' : 'Show Logs';
+            if (isVisible && !logEvtSource) {
+                startLogConnection();
+            } else if (!isVisible) {
+                stopLogConnection();
+            }
+            if (isVisible) {
                 logContent.scrollTop = logContent.scrollHeight;
             }
         });
@@ -397,7 +405,13 @@
             if (logBuffer.length > maxLogLines) {
                 logBuffer = logBuffer.slice(-maxLogLines);
             }
-            renderLogLines();
+            logDirty = true;
+            if (!renderRAF) {
+                renderRAF = requestAnimationFrame(() => {
+                    renderLogLines();
+                    renderRAF = null;
+                });
+            }
         }
 
         function renderLogLines() {
@@ -425,6 +439,33 @@
             logContent.appendChild(fragment);
             if (autoscroll && wasAtBottom) {
                 logContent.scrollTop = logContent.scrollHeight;
+            }
+        }
+
+        function startLogConnection() {
+            logBuffer = [];
+            totalLogLines = 0;
+            logEvtSource = new EventSource('/logs');
+            logEvtSource.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'log') {
+                        addLogEntry(data.message);
+                    }
+                } catch (e) {
+                    console.error('Failed to parse log SSE data:', event.data);
+                }
+            };
+            logEvtSource.onerror = () => {
+                logEvtSource.close();
+                logEvtSource = null;
+            };
+        }
+
+        function stopLogConnection() {
+            if (logEvtSource) {
+                logEvtSource.close();
+                logEvtSource = null;
             }
         }
 
@@ -459,8 +500,6 @@
                         updateTask(data.slot, data.task, data.progress);
                     } else if (data.type === 'timing') {
                         updateTiming(data.slot, data.task, data.prompt_tps, data.eval_tps);
-                    } else if (data.type === 'log') {
-                        addLogEntry(data.message);
                     }
                 } catch (e) {
                     console.error('Failed to parse SSE data:', event.data);

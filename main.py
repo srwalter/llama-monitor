@@ -127,11 +127,7 @@ async def sse_events():
 
         while True:
             lines = await asyncio.to_thread(log_reader.get_lines)
-            logger.debug(f"SSE poll: {len(lines)} lines")
             for line in lines:
-                # Send raw log line
-                yield f'data: {{"type": "log", "message": {json.dumps(line)}}}\n\n'
-
                 # Check for progress line
                 m = PROMPT_PROGRESS_RE.search(line)
                 if m:
@@ -181,6 +177,29 @@ async def sse_events():
 
     return StreamingResponse(
         event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/logs")
+async def sse_logs():
+    async def log_generator() -> AsyncGenerator[str, None]:
+        import asyncio
+
+        while True:
+            lines = await asyncio.to_thread(log_reader.get_lines)
+            for line in lines:
+                yield f'data: {json.dumps({"type": "log", "message": line})}\n\n'
+            await asyncio.sleep(0.1)
+            yield ':\n\n'
+
+    return StreamingResponse(
+        log_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
