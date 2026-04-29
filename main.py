@@ -146,16 +146,93 @@ class GpuMonitor:
 gpu_monitor = GpuMonitor()
 
 
+class TempMonitor:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._temps = {}
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._sensors = self._discover_sensors()
+
+    @staticmethod
+    def _discover_sensors():
+        sensors = []
+        hwmon_paths = sorted(Path("/sys/class/hwmon").glob("hwmon*"))
+        for hwmon_path in hwmon_paths:
+            name = ""
+            name_path = hwmon_path / "name"
+            if name_path.exists():
+                name = name_path.read_text().strip()
+            for temp_input in sorted(hwmon_path.glob("temp*_input")):
+                try:
+                    value = int(temp_input.read_text().strip())
+                    if value > 0:
+                        label = ""
+                        label_path = Path(str(temp_input)[:-len("_input")] + "label")
+                        if label_path.exists():
+                            label = label_path.read_text().strip()
+                        if not label:
+                            temp_num = temp_input.name.replace("temp_", "").replace("_input", "")
+                            label = f"{name} temp{temp_num}" if name else temp_num
+                        sensors.append({
+                            "path": str(temp_input),
+                            "name": label,
+                            "hwmon": name,
+                        })
+                except (ValueError, OSError):
+                    pass
+        return sensors
+
+    def start(self):
+        self._thread = threading.Thread(
+            target=self._poll,
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info(f"Started temperature monitor ({len(self._sensors)} sensors)")
+
+    def _poll(self):
+        while not self._stop_event.is_set():
+            new_temps = {}
+            for sensor in self._sensors:
+                try:
+                    with open(sensor["path"]) as f:
+                        value = int(f.read().strip()) / 1000.0
+                    new_temps[sensor["name"]] = round(value, 1)
+                except Exception:
+                    pass
+            with self._lock:
+                self._temps = new_temps
+            self._stop_event.wait(2)
+
+    def get_temps(self):
+        with self._lock:
+            return dict(self._temps)
+
+    def get_sensor_names(self):
+        return [s["name"] for s in self._sensors]
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+
+temp_monitor = TempMonitor()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_reader.start()
     gpu_monitor.start()
+    temp_monitor.start()
     logger.info("Event generator ready")
 
     yield
 
     log_reader.stop()
     gpu_monitor.stop()
+    temp_monitor.stop()
 
 
 app = FastAPI(title="llama.cpp Progress Monitor", lifespan=lifespan)
@@ -277,6 +354,31 @@ async def sse_gpu():
 
     return StreamingResponse(
         gpu_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/temp")
+async def sse_temp():
+    async def temp_generator() -> AsyncGenerator[str, None]:
+        import asyncio
+
+        current_temps = {}
+        while True:
+            temps = await asyncio.to_thread(temp_monitor.get_temps)
+            if temps != current_temps:
+                current_temps = temps
+                yield f'data: {json.dumps({"type": "temp", "temps": temps})}\n\n'
+            await asyncio.sleep(0.5)
+            yield ':\n\n'
+
+    return StreamingResponse(
+        temp_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

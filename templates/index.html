@@ -293,6 +293,72 @@
             display: block;
         }
 
+        #temp-monitor {
+            max-width: 900px;
+            margin: 0 auto 1rem;
+            background: var(--card-bg);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            padding: 1.25rem 1.5rem;
+        }
+
+        #temp-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+
+        #temp-title {
+            font-weight: 600;
+            font-size: 1rem;
+            color: var(--accent-light);
+        }
+
+        #temp-max {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        #temp-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 0.75rem;
+        }
+
+        .temp-item {
+            background: var(--bg);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .temp-name {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            word-break: break-word;
+            max-width: 110px;
+        }
+
+        .temp-value {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--text);
+            text-align: right;
+            min-width: 60px;
+        }
+
+        .temp-value.warm {
+            color: var(--accent-light);
+        }
+
+        .temp-value.hot {
+            color: var(--danger);
+        }
+
         #clippy {
             position: fixed;
             bottom: -120px;
@@ -494,6 +560,13 @@
             <span id="gpu-value">0%</span>
         </div>
         <canvas id="gpu-canvas"></canvas>
+    </div>
+    <div id="temp-monitor">
+        <div id="temp-header">
+            <span id="temp-title">Temperature Sensors</span>
+            <span id="temp-max">--°C</span>
+        </div>
+        <div id="temp-grid"></div>
     </div>
     <div id="tasks">
         <div class="no-tasks">Waiting for progress data...</div>
@@ -913,6 +986,81 @@
 
         startGpuConnection();
         window.addEventListener('resize', resizeGpuCanvas);
+
+        const tempGrid = document.getElementById('temp-grid');
+        const tempMaxEl = document.getElementById('temp-max');
+        let tempEvtSource = null;
+
+        function getTempColorClass(temp) {
+            if (temp >= 80) return 'hot';
+            if (temp >= 60) return 'warm';
+            return '';
+        }
+
+        function updateTempData(data) {
+            const temps = data.temps;
+            const names = Object.keys(temps);
+            let maxTemp = 0;
+
+            for (const name of names) {
+                let item = document.getElementById(`temp-${name.replace(/[^a-zA-Z0-9]/g, '_')}`);
+                if (!item) {
+                    item = document.createElement('div');
+                    item.className = 'temp-item';
+                    item.id = `temp-${name.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                    const nameSpan = document.createElement('span');
+                    nameSpan.className = 'temp-name';
+                    const valSpan = document.createElement('span');
+                    valSpan.className = 'temp-value';
+                    item.appendChild(nameSpan);
+                    item.appendChild(valSpan);
+                    tempGrid.appendChild(item);
+                }
+                const valSpan = item.querySelector('.temp-value');
+                const nameSpan = item.querySelector('.temp-name');
+                nameSpan.textContent = name;
+                const temp = temps[name];
+                valSpan.textContent = `${temp}°C`;
+                valSpan.className = 'temp-value' + (getTempColorClass(temp) ? ` ${getTempColorClass(temp)}` : '');
+                if (temp > maxTemp) maxTemp = temp;
+            }
+
+            for (const child of [...tempGrid.children]) {
+                const childName = child.id.replace('temp_', '').replace(/_/g, ' ').replace(/_/g, '');
+                let found = false;
+                for (const name of names) {
+                    if (child.id === `temp-${name.replace(/[^a-zA-Z0-9]/g, '_')}`) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    child.remove();
+                }
+            }
+
+            tempMaxEl.textContent = `${maxTemp}°C`;
+        }
+
+        function startTempConnection() {
+            tempEvtSource = new EventSource('/temp');
+            tempEvtSource.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'temp') {
+                        updateTempData(data);
+                    }
+                } catch (e) {
+                    console.error('Failed to parse temp SSE data:', event.data);
+                }
+            };
+            tempEvtSource.onerror = () => {
+                tempEvtSource.close();
+                tempEvtSource = null;
+            };
+        }
+
+        startTempConnection();
 
         let evtSource = null;
         let reconnectAttempts = 0;
